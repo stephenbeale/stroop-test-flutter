@@ -20,7 +20,7 @@ class StroopTestApp extends StatelessWidget {
   }
 }
 
-enum GameState { start, playing, gameOver }
+enum GameState { start, playing, paused, gameOver }
 
 class ColorOption {
   final String name;
@@ -70,7 +70,8 @@ class StroopTestScreen extends StatefulWidget {
 }
 
 class _StroopTestScreenState extends State<StroopTestScreen> {
-  static const int timeLimitMs = 10000;
+  static const int initialTimeLimitMs = 10000;
+  static const int minTimeLimitMs = 2000;
 
   final Random _random = Random();
 
@@ -82,14 +83,27 @@ class _StroopTestScreenState extends State<StroopTestScreen> {
   double _timerFraction = 1.0;
   Timer? _timer;
   int _timerElapsed = 0;
+  int _timeLimitMs = initialTimeLimitMs;
+  bool _showLabels = true;
+  int _pauseCountdown = 5;
+  Timer? _pauseTimer;
 
   void _startGame() {
     setState(() {
       _gameState = GameState.playing;
       _wordIndex = 0;
       _streak = 0;
+      _timeLimitMs = initialTimeLimitMs;
     });
     _nextRound();
+  }
+
+  void _goToStart() {
+    _timer?.cancel();
+    _pauseTimer?.cancel();
+    setState(() {
+      _gameState = GameState.start;
+    });
   }
 
   void _nextRound() {
@@ -113,12 +127,12 @@ class _StroopTestScreenState extends State<StroopTestScreen> {
     const tick = Duration(milliseconds: 50);
     _timer = Timer.periodic(tick, (t) {
       _timerElapsed += 50;
-      if (_timerElapsed >= timeLimitMs) {
+      if (_timerElapsed >= _timeLimitMs) {
         t.cancel();
         _endGame('Time ran out!');
       } else {
         setState(() {
-          _timerFraction = 1.0 - (_timerElapsed / timeLimitMs);
+          _timerFraction = 1.0 - (_timerElapsed / _timeLimitMs);
         });
       }
     });
@@ -130,7 +144,11 @@ class _StroopTestScreenState extends State<StroopTestScreen> {
 
     if (chosenIndex == _fillColorIndex) {
       _streak++;
-      _nextRound();
+      if (_streak > 0 && _streak % 10 == 0 && _timeLimitMs > minTimeLimitMs) {
+        _showPause();
+      } else {
+        _nextRound();
+      }
     } else {
       _endGame(
         'The answer was ${colorOptions[_fillColorIndex].name.toUpperCase()}.',
@@ -138,8 +156,35 @@ class _StroopTestScreenState extends State<StroopTestScreen> {
     }
   }
 
+  void _showPause() {
+    final newLimit = max(_timeLimitMs - 1000, minTimeLimitMs);
+    final newSeconds = newLimit ~/ 1000;
+    setState(() {
+      _gameState = GameState.paused;
+      _pauseCountdown = 5;
+      _endMessage =
+          'Nice work! $_streak in a row! Time per round is now $newSeconds second${newSeconds != 1 ? 's' : ''}.';
+    });
+
+    _pauseTimer?.cancel();
+    _pauseTimer = Timer.periodic(const Duration(seconds: 1), (t) {
+      setState(() {
+        _pauseCountdown--;
+      });
+      if (_pauseCountdown <= 0) {
+        t.cancel();
+        setState(() {
+          _timeLimitMs = newLimit;
+          _gameState = GameState.playing;
+        });
+        _nextRound();
+      }
+    });
+  }
+
   void _endGame(String reason) {
     _timer?.cancel();
+    _pauseTimer?.cancel();
     setState(() {
       _gameState = GameState.gameOver;
       _endMessage = reason;
@@ -149,6 +194,7 @@ class _StroopTestScreenState extends State<StroopTestScreen> {
   @override
   void dispose() {
     _timer?.cancel();
+    _pauseTimer?.cancel();
     super.dispose();
   }
 
@@ -156,11 +202,16 @@ class _StroopTestScreenState extends State<StroopTestScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       body: SafeArea(
-        child: switch (_gameState) {
-          GameState.start => _buildStartScreen(),
-          GameState.playing => _buildGameScreen(),
-          GameState.gameOver => _buildEndScreen(),
-        },
+        child: Stack(
+          children: [
+            switch (_gameState) {
+              GameState.start => _buildStartScreen(),
+              GameState.playing || GameState.paused => _buildGameScreen(),
+              GameState.gameOver => _buildEndScreen(),
+            },
+            if (_gameState == GameState.paused) _buildPauseOverlay(),
+          ],
+        ),
       ),
     );
   }
@@ -212,14 +263,40 @@ class _StroopTestScreenState extends State<StroopTestScreen> {
                       fontWeight: FontWeight.bold,
                     ),
                   ),
+                  const TextSpan(text: ' per round. Every '),
                   const TextSpan(
-                    text: ' per round. How long can you keep your streak?',
+                    text: '10 correct answers',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  const TextSpan(
+                    text:
+                        ', the time drops by 1 second. How long can you keep your streak?',
                   ),
                 ],
               ),
               textAlign: TextAlign.center,
             ),
-            const SizedBox(height: 40),
+            const SizedBox(height: 32),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Switch(
+                  value: _showLabels,
+                  activeColor: const Color(0xFFE94560),
+                  inactiveTrackColor: const Color(0xFF444444),
+                  onChanged: (v) => setState(() => _showLabels = v),
+                ),
+                const SizedBox(width: 8),
+                const Text(
+                  'Show labels on buttons',
+                  style: TextStyle(color: Color(0xFFAAAAAA), fontSize: 16),
+                ),
+              ],
+            ),
+            const SizedBox(height: 32),
             _buildActionButton('Start', _startGame),
           ],
         ),
@@ -293,7 +370,8 @@ class _StroopTestScreenState extends State<StroopTestScreen> {
         onPressed: () => _handleAnswer(index),
         style: ElevatedButton.styleFrom(
           backgroundColor: option.buttonColor,
-          foregroundColor: Colors.white,
+          foregroundColor:
+              _showLabels ? Colors.white : Colors.transparent,
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(10),
             side: const BorderSide(color: Color(0xFF444444), width: 2),
@@ -304,6 +382,49 @@ class _StroopTestScreenState extends State<StroopTestScreen> {
           ),
         ),
         child: Text(option.name.toUpperCase()),
+      ),
+    );
+  }
+
+  Widget _buildPauseOverlay() {
+    return Container(
+      color: const Color(0xFF1A1A2E).withOpacity(0.95),
+      child: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Text(
+              'Level Up!',
+              style: TextStyle(
+                fontSize: 32,
+                fontWeight: FontWeight.bold,
+                color: Color(0xFFE94560),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 40),
+              child: Text(
+                _endMessage,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  fontSize: 18,
+                  color: Color(0xFFAAAAAA),
+                  height: 1.6,
+                ),
+              ),
+            ),
+            const SizedBox(height: 24),
+            Text(
+              '$_pauseCountdown',
+              style: const TextStyle(
+                fontSize: 48,
+                fontWeight: FontWeight.w900,
+                color: Colors.white,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -340,7 +461,7 @@ class _StroopTestScreenState extends State<StroopTestScreen> {
             ),
           ),
           const SizedBox(height: 40),
-          _buildActionButton('Play Again', _startGame),
+          _buildActionButton('Play Again', _goToStart),
         ],
       ),
     );
